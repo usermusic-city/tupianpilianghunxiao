@@ -75,95 +75,116 @@
 </div>
 
 <script>
-    // --- 逻辑部分保持不变 ---
-    class Obfuscator {
-        constructor(w, h) {
-            this.w = w; this.h = h; this.total = w * h;
-            this.curveX = new Int32Array(this.total);
-            this.curveY = new Int32Array(this.total);
-            this.currentIndex = 0;
-        }
-        generate2d(x, y, ax, ay, bx, by) {
-            let w = Math.abs(ax + ay), h = Math.abs(bx + by);
-            let dax = Math.sign(ax), day = Math.sign(ay);
-            let dbx = Math.sign(bx), dby = Math.sign(by);
-            if (h === 1) { for (let i = 0; i < w; i++) { this.curveX[this.currentIndex] = x; this.curveY[this.currentIndex] = y; this.currentIndex++; x += dax; y += day; } return; }
-            if (w === 1) { for (let i = 0; i < h; i++) { this.curveX[this.currentIndex] = x; this.curveY[this.currentIndex] = y; this.currentIndex++; x += dbx; y += dby; } return; }
-            let ax2 = Math.trunc(ax / 2), ay2 = Math.trunc(ay / 2), bx2 = Math.trunc(bx / 2), by2 = Math.trunc(by / 2);
-            if (2 * w > 3 * h) {
-                if ((Math.abs(ax2 + ay2) % 2 !== 0) && (w > 2)) { ax2 += dax; ay2 += day; }
-                this.generate2d(x, y, ax2, ay2, bx, by);
-                this.generate2d(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by);
-            } else {
-                if ((Math.abs(bx2 + by2) % 2 !== 0) && (h > 2)) { bx2 += dbx; by2 += dby; }
-                this.generate2d(x, y, bx2, by2, ax2, ay2);
-                this.generate2d(x + bx2, y + by2, ax, ay, bx - bx2, by - by2);
-                this.generate2d(x + (ax - dax) + (bx2 - dbx), y + (ay - day) + (by2 - dby), -bx2, -by2, -(ax - ax2), -(ay - ay2));
-            }
+// 将 Obfuscator 逻辑和 Worker 代码内联在 Blob 中
+const workerScript = `
+self.onmessage = function(e) {
+    const { pixels, width, height, total, curveX, curveY, offset, isEncrypt } = e.data;
+    const res = new Uint32Array(pixels.length);
+    for (let i = 0; i < total; i++) {
+        const targetIdx = (i + offset) % total;
+        const x1 = curveX[i], y1 = curveY[i];
+        const x2 = curveX[targetIdx], y2 = curveY[targetIdx];
+        if (isEncrypt) {
+            res[y2 * width + x2] = pixels[y1 * width + x1];
+        } else {
+            res[y1 * width + x1] = pixels[y2 * width + x2];
         }
     }
+    self.postMessage({ buffer: res.buffer }, [res.buffer]);
+};
+`;
+const blob = new Blob([workerScript], { type: 'application/javascript' });
+const workerUrl = URL.createObjectURL(blob);
 
-    document.getElementById('processBtn').addEventListener('click', async () => {
-        const files = document.getElementById('fileInput').files;
-        if (files.length === 0) return alert('请先选择图片');
-        
-        const isEncrypt = document.getElementById('mode').value === 'encrypt';
-        const log = document.getElementById('log');
-        const zip = new JSZip();
-        
-        document.getElementById('processBtn').disabled = true;
-        log.innerText = '正在处理中，请稍候...';
-
-        try {
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                log.innerText = `处理中 (${i + 1}/${files.length}): ${file.name}`;
-                const blob = await processImage(file, isEncrypt);
-                zip.file(file.name, blob);
-            }
-
-            log.innerText = '正在打包文件...';
-            const content = await zip.generateAsync({type: "blob"});
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(content);
-            link.download = "result.zip";
-            link.click();
-            log.innerText = '处理完成！已自动下载';
-        } catch (err) {
-            log.innerText = '处理出错：' + err.message;
-        } finally {
-            document.getElementById('processBtn').disabled = false;
-        }
-    });
-
-    async function processImage(file, isEncrypt) {
-        const img = await createImageBitmap(file);
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width; canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-
-        const imageData = ctx.getImageData(0, 0, img.width, img.height);
-        const pixels = new Uint32Array(imageData.data.buffer);
-        const res = new Uint32Array(pixels.length);
-        
-        const obs = new Obfuscator(img.width, img.height);
-        if (img.width >= img.height) obs.generate2d(0, 0, img.width, 0, 0, img.height);
-        else obs.generate2d(0, 0, 0, img.height, img.width, 0);
-
-        const offset = Math.round(((Math.sqrt(5) - 1) / 2) * obs.total);
-        for (let i = 0; i < obs.total; i++) {
-            const targetIdx = (i + offset) % obs.total;
-            const x1 = obs.curveX[i], y1 = obs.curveY[i];
-            const x2 = obs.curveX[targetIdx], y2 = obs.curveY[targetIdx];
-            if (isEncrypt) res[y2 * img.width + x2] = pixels[y1 * img.width + x1];
-            else res[y1 * img.width + x1] = pixels[y2 * img.width + x2];
-        }
-
-        imageData.data.set(new Uint8ClampedArray(res.buffer));
-        ctx.putImageData(imageData, 0, 0);
-        return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+class Obfuscator {
+    constructor(w, h) {
+        this.w = w; this.h = h; this.total = w * h;
+        this.curveX = new Int32Array(this.total);
+        this.curveY = new Int32Array(this.total);
+        this.currentIndex = 0;
     }
-</script>
+    generate2d(x, y, ax, ay, bx, by) {
+        let w = Math.abs(ax + ay), h = Math.abs(bx + by);
+        let dax = Math.sign(ax), day = Math.sign(ay);
+        let dbx = Math.sign(bx), dby = Math.sign(by);
+        if (h === 1) { for (let i = 0; i < w; i++) { this.curveX[this.currentIndex] = x; this.curveY[this.currentIndex] = y; this.currentIndex++; x += dax; y += day; } return; }
+        if (w === 1) { for (let i = 0; i < h; i++) { this.curveX[this.currentIndex] = x; this.curveY[this.currentIndex] = y; this.currentIndex++; x += dbx; y += dby; } return; }
+        let ax2 = Math.trunc(ax / 2), ay2 = Math.trunc(ay / 2), bx2 = Math.trunc(bx / 2), by2 = Math.trunc(by / 2);
+        if (2 * w > 3 * h) {
+            if ((Math.abs(ax2 + ay2) % 2 !== 0) && (w > 2)) { ax2 += dax; ay2 += day; }
+            this.generate2d(x, y, ax2, ay2, bx, by);
+            this.generate2d(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by);
+        } else {
+            if ((Math.abs(bx2 + by2) % 2 !== 0) && (h > 2)) { bx2 += dbx; by2 += dby; }
+            this.generate2d(x, y, bx2, by2, ax2, ay2);
+            this.generate2d(x + bx2, y + by2, ax, ay, bx - bx2, by - by2);
+            this.generate2d(x + (ax - dax) + (bx2 - dbx), y + (ay - day) + (by2 - dby), -bx2, -by2, -(ax - ax2), -(ay - ay2));
+        }
+    }
+}
+
+document.getElementById('processBtn').addEventListener('click', async () => {
+    const files = document.getElementById('fileInput').files;
+    if (files.length === 0) return alert('请先选择图片');
+    const isEncrypt = document.getElementById('mode').value === 'encrypt';
+    const log = document.getElementById('log');
+    const zip = new JSZip();
+    document.getElementById('processBtn').disabled = true;
+    log.innerText = '正在处理中，请稍候...';
+
+    try {
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            log.innerText = `处理中 (${i + 1}/${files.length}): ${file.name}`;
+            const img = await createImageBitmap(file);
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width; canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(0, 0, img.width, img.height);
+            const pixels = new Uint32Array(imageData.data.buffer);
+
+            const obs = new Obfuscator(img.width, img.height);
+            if (img.width >= img.height) obs.generate2d(0, 0, img.width, 0, 0, img.height);
+            else obs.generate2d(0, 0, 0, img.height, img.width, 0);
+
+            const offset = Math.round(((Math.sqrt(5) - 1) / 2) * obs.total);
+
+            const result = await new Promise((resolve) => {
+                const worker = new Worker(workerUrl);
+                worker.onmessage = (e) => {
+                    const res = new Uint32Array(e.data.buffer);
+                    imageData.data.set(new Uint8ClampedArray(res.buffer));
+                    ctx.putImageData(imageData, 0, 0);
+                    canvas.toBlob(resolve, 'image/jpeg', 0.9);
+                    worker.terminate();
+                };
+                worker.postMessage({
+                    pixels: pixels,
+                    width: img.width,
+                    height: img.height,
+                    total: obs.total,
+                    curveX: obs.curveX,
+                    curveY: obs.curveY,
+                    offset: offset,
+                    isEncrypt: isEncrypt
+                }, [pixels.buffer]);
+            });
+            zip.file(file.name, result);
+        }
+
+        log.innerText = '正在打包文件...';
+        const content = await zip.generateAsync({type: "blob"});
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(content);
+        link.download = "result.zip";
+        link.click();
+        log.innerText = '处理完成！已自动下载';
+    } catch (err) {
+        log.innerText = '处理出错：' + err.message;
+    } finally {
+        document.getElementById('processBtn').disabled = false;
+    }
+});
 </body>
 </html>
